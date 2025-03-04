@@ -23,6 +23,7 @@ from photutils.aperture import CircularAperture
 from photutils.background import LocalBackground
 from photutils.datasets import make_model_image as _make_model_image
 from photutils.psf.groupers import SourceGrouper
+from photutils.psf.summation_model import SummationModel
 from photutils.psf.utils import _get_psf_model_params, _validate_psf_model
 from photutils.utils._misc import _get_meta
 from photutils.utils._parameters import as_pair
@@ -733,39 +734,64 @@ class PSFPhotometry(ModelImageMixin):
                              'data. Check the initial source positions or '
                              'increase the fit_shape.')
 
+    def _make_single_source_psf_model(self, source):
+        psf_model = self.psf_model.copy()
+        for model_param, init_col in self._param_maps['init'].items():
+            value = source[init_col]
+            if isinstance(value, u.Quantity):
+                value = value.value
+            setattr(psf_model, model_param, value)
+            psf_model.name = source['id']
+
+        if self.xy_bounds is not None:
+            if self.xy_bounds[0] is not None:
+                x_param = getattr(psf_model, self._param_maps['model']['x'])
+                x_param.bounds = (x_param.value - self.xy_bounds[0],
+                                  x_param.value + self.xy_bounds[0])
+
+            if self.xy_bounds[1] is not None:
+                y_param = getattr(psf_model, self._param_maps['model']['y'])
+                y_param.bounds = (y_param.value - self.xy_bounds[1],
+                                  y_param.value + self.xy_bounds[1])
+
+        return psf_model
+
     def _make_psf_model(self, sources):
         """
         Make a PSF model to fit a single source or several sources
         within a group.
         """
-        init_param_map = self._param_maps['init']
+        if len(sources) == 1:
+            return self._make_single_source_psf_model(sources[0])
 
-        for index, source in enumerate(sources):
-            model = self.psf_model.copy()
-            for model_param, init_col in init_param_map.items():
+        init_param_map = self._param_maps['init']
+        input_params = {'n_models': len(sources)}
+        for model_param, init_col in init_param_map.items():
+            params = []
+            for source in sources:
                 value = source[init_col]
                 if isinstance(value, u.Quantity):
                     value = value.value  # psf model cannot be fit with units
-                setattr(model, model_param, value)
-                model.name = source['id']
+                params.append(value)
 
-            if self.xy_bounds is not None:
-                if self.xy_bounds[0] is not None:
-                    x_param = getattr(model, self._param_maps['model']['x'])
-                    x_param.bounds = (x_param.value - self.xy_bounds[0],
-                                      x_param.value + self.xy_bounds[0])
+            input_params[model_param] = params
 
-                if self.xy_bounds[1] is not None:
-                    y_param = getattr(model, self._param_maps['model']['y'])
-                    y_param.bounds = (y_param.value - self.xy_bounds[1],
-                                      y_param.value + self.xy_bounds[1])
+        for param_name in self.psf_model.param_names:
+            if param_name not in input_params:
+                value = getattr(self.psf_model, param_name).value
+                if isinstance(value, u.Quantity):
+                    value = value.value
+                input_params[param_name] = [value] * len(sources)
 
-            if index == 0:
-                psf_model = model
-            else:
-                psf_model += model
+        bounds = {}
+        if self.xy_bounds is not None:
+            if self.xy_bounds[0] is not None:
+                bounds[self._param_maps['model']['x']] = self.xy_bounds[0]
+            if self.xy_bounds[1] is not None:
+                bounds[self._param_maps['model']['y']] = self.xy_bounds[1]
 
-        return psf_model
+        model_set = type(self.psf_model)(**input_params)
+        return SummationModel(model_set, bounds=bounds)
 
     @staticmethod
     def _move_column(table, colname, colname_after):
@@ -989,15 +1015,14 @@ class PSFPhotometry(ModelImageMixin):
         """
         Parse the fit results for each source or group of sources.
         """
-        psf_nsub = self.psf_model.n_submodels
-
         fit_models = []
         fit_infos = []
         fit_param_errs = []
         nfitparam = len(self._param_maps['fit_params'].keys())
         for model, fit_info in zip(group_models, group_fit_infos, strict=True):
-            model_nsub = model.n_submodels
-            npsf_models = model_nsub // psf_nsub
+            npsf_models = 1
+            if isinstance(model, SummationModel):
+                npsf_models = model.n_terms
 
             # NOTE: param_cov/param_err are returned in the same order
             # as the model parameters
@@ -1017,9 +1042,14 @@ class PSFPhotometry(ModelImageMixin):
                 continue
 
             # model is a grouped model for multiple sources
-            fit_models.extend(self._split_compound_model(model, psf_nsub))
-            fit_infos.extend([fit_info] * npsf_models)  # views
-            fit_param_errs.extend(self._split_param_errs(param_err, nfitparam))
+            if isinstance(model, SummationModel):
+                fit_models.extend(model.terms)
+                fit_infos.extend([fit_info] * npsf_models)  # views
+                fit_param_errs.extend(
+                    self._split_param_errs(param_err, nfitparam)
+                )
+            else:
+                raise TypeError('Unexpected model type')
 
         if len(fit_models) != len(fit_infos):  # pragma: no cover
             raise ValueError('fit_models and fit_infos have different lengths')
