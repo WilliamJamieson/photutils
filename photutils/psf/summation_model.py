@@ -46,6 +46,8 @@ class SummationModel(Model):
         The xy_bounds passed to the psf fitting routine for the x/y values.
     names : list, optional
         The names that each term should be given as distinct models.
+    name : str, optional
+        The name of the model.
     """
 
     _param_names = ()
@@ -53,12 +55,21 @@ class SummationModel(Model):
     def __init__(self,
                  model_set: Model,
                  bounds: dict[str, tuple] | None = None,
-                 names: list[str] | None = None) -> None:
+                 names: list[str] | None = None,
+                 name: str | None = None) -> None:
         self._model_set = model_set
-        self._make_parameters(bounds)
+        self._name = name
         self._names = names
+        self._make_parameters(bounds)
 
-        super().__init__()
+        # Call the functions from the `super().__init__` but avoid the
+        # parameter deepcopy that is used in that function
+        self._default_inputs_outputs()
+        self._initialize_constraints({})
+        self._initialize_parameters((), {})
+        self._initialize_slices()
+        self._initialize_unit_support()
+        self._constraints_cache = {}
 
     def _term(self, index: int) -> Model:
         params = {
@@ -159,8 +170,9 @@ class SummationModel(Model):
 
         if bounds is not None:
             for name, bound in bounds.items():
-                param = getattr(self, name)
-                param.bounds = (param.value - bound[0], param.value + bound[1])
+                for index in range(self.n_terms):
+                    param = getattr(self, f"{name}_{index}")
+                    param.bounds = (param.value - bound, param.value + bound)
 
     @property
     def n_inputs(self):
@@ -195,3 +207,19 @@ class SummationModel(Model):
         results = self._model_set.evaluate(*set_args, **kwargs).T
 
         return results.sum(axis=0)
+
+    def __call__(self, *args, **kwargs):
+        """
+        Call the model.
+
+        Parameters
+        ----------
+        *args : tuple
+            The positional arguments to the model.
+        **kwargs : dict
+            The keyword arguments to the model.
+        """
+        broadcast_args = tuple(
+            np.broadcast_to(arg, (self.n_terms, *arg.shape)) for arg in args
+        )
+        return super().__call__(*broadcast_args, **kwargs)

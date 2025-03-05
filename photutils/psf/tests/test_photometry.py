@@ -1223,3 +1223,53 @@ def test_move_column():
     assert tbl2.colnames == ['a', 'b', 'c']
     tbl3 = psfphot._move_column(tbl, 'b', 'b')
     assert tbl3.colnames == ['a', 'b', 'c']
+
+
+def test_multiple_sources_with_bounds():
+    # make simulated image
+    psf_model = CircularGaussianPRF(flux=1, fwhm=2)
+    model_shape = (9, 9)
+    n_sources = 10
+    shape = (21, 21)
+    data, true_params = make_psf_model_image(shape, psf_model, n_sources,
+                                             model_shape=model_shape,
+                                             flux=(500, 700),
+                                             min_separation=3,
+                                             seed=0)
+
+    # fit the sources in the data with the PSF model
+    # with grouping and xy_bounds
+    fit_shape = (5, 5)
+    finder = DAOStarFinder(6.2, 2.1)
+    grouper = SourceGrouper(10)
+    xy_bounds = (1, 1)
+    psfphot = PSFPhotometry(psf_model, fit_shape, finder=finder,
+                            grouper=grouper, aperture_radius=4,
+                            xy_bounds=xy_bounds)
+    phot = psfphot(data, init_params=None)
+
+    idx = [4, 2, 7, 3, 6, 9, 1, 0, 5, 8]
+    phot_matched = phot[idx]
+
+    assert_allclose(phot_matched['x_fit'], true_params['x_0'], rtol=1e-6)
+    assert_allclose(phot_matched['y_fit'], true_params['y_0'], rtol=1e-6)
+    assert_allclose(phot_matched['flux_fit'], true_params['flux'], rtol=1e-6)
+
+
+def test_large_summation_model():
+    from photutils.psf.summation_model import SummationModel
+
+    rng = np.random.default_rng(619)
+
+    n_terms = 1_000
+    x_0 = rng.random(n_terms)
+    y_0 = rng.random(n_terms)
+    flux = rng.random(n_terms)
+    fwhm = rng.random(n_terms)
+    model_set = CircularGaussianPRF(
+        flux=flux, fwhm=fwhm, x_0=x_0, y_0=y_0, n_models=n_terms
+    )
+    model = SummationModel(model_set)
+    x = np.linspace(0, 1, 100)
+    y = np.linspace(0, 1, 100)
+    _ = model(x, y)
