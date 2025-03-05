@@ -127,10 +127,22 @@ class SummationModel(Model):
 
             return value
 
-        default = getter(None)
-        param = Parameter(name, default=default, getter=getter, setter=setter)
+        set_param = getattr(self._model_set, parameter)
+        value = set_param[index]
+
+        param = Parameter(
+            name,
+            getter=getter,
+            setter=setter,
+            default=value,
+            unit=set_param.unit,
+            fixed=set_param.fixed,
+            bounds=set_param.bounds,
+            prior=set_param.prior,
+            tied=set_param.tied,
+        )
         param.model = self
-        param.value = default
+        param.value = value
 
         return param
 

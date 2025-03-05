@@ -790,8 +790,10 @@ class PSFPhotometry(ModelImageMixin):
             if self.xy_bounds[1] is not None:
                 bounds[self._param_maps['model']['y']] = self.xy_bounds[1]
 
+        names = [source['id'] for source in sources]
+
         model_set = type(self.psf_model)(**input_params)
-        return SummationModel(model_set, bounds=bounds)
+        return SummationModel(model_set, bounds=bounds, names=names)
 
     @staticmethod
     def _move_column(table, colname, colname_after):
@@ -1020,9 +1022,9 @@ class PSFPhotometry(ModelImageMixin):
         fit_param_errs = []
         nfitparam = len(self._param_maps['fit_params'].keys())
         for model, fit_info in zip(group_models, group_fit_infos, strict=True):
-            npsf_models = 1
-            if isinstance(model, SummationModel):
-                npsf_models = model.n_terms
+            npsf_models = (
+                model.n_terms if isinstance(model, SummationModel) else 1
+            )
 
             # NOTE: param_cov/param_err are returned in the same order
             # as the model parameters
